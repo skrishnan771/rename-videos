@@ -1,6 +1,6 @@
 {
   "name": "rename-videos",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Smart CLI tool to clean and standardize video filenames",
   "main": "bin/rename-videos.js",
   "bin": {
