@@ -1,6 +1,6 @@
 {
   "name": "rename-videos",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Smart CLI tool to clean and standardize video filenames",
   "main": "bin/rename-videos.js",
   "bin": {
@@ -16,5 +16,9 @@
     "cli"
   ],
   "author": "srk771",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skrishnan771/rename-videos"
+  }
 }
