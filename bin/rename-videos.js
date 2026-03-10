@@ -115,6 +115,20 @@ ${B('WHAT GETS RENAMED')}
   ${c.yellow('⚠')} Camera files are ${B('never')} renamed:
       VID_20190624_191055.mp4   IMG_20210101.jpg   20190624_191055.mp4
 
+${B('SKIPPED DIRECTORIES')}
+  The scanner automatically prunes subtrees that are clearly not media:
+
+  By exact name:  node_modules  .git  .venv  venv  __pycache__  target
+                  .gradle  dist  coverage  .cache  .next  .bundle  vendor …
+
+  By marker file: if a directory contains package.json, Cargo.toml, go.mod,
+                  requirements.txt, pyproject.toml, Gemfile, pom.xml, etc.
+                  the entire subtree is skipped (catches project roots with
+                  non-standard names like "media-server" or "my-project").
+
+  Skipped directories are reported after the scan summary.
+  ${D('The root --path directory itself is never auto-skipped.')}
+
 ${B('NAME CLEANING')}
   Scene filenames:   Breaking.Bad.S05E14.Ozymandias.1080p.BluRay.x265-PSA.mkv
                   →  Breaking Bad S05 E14 - Ozymandias.mkv
@@ -919,6 +933,88 @@ function progressBar(done, total, label = '', color = 'cyan') {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  SCANNER — SKIP LIST
+//
+//  Directories that are never media folders and can contain enormous numbers
+//  of files (thousands of tiny JS/Python/Rust files) that would make the scan
+//  hang for minutes on a developer machine.
+//
+//  Two tiers:
+//    SKIP_EXACT   — exact directory names always skipped (case-insensitive)
+//    SKIP_MARKERS — if ANY of these files/dirs exist inside a directory,
+//                   that directory and its entire subtree are skipped.
+//                   This catches repos whose top-level name is non-standard
+//                   (e.g. a project named "movies-api" still has package.json).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Exact names that are definitively non-media at any nesting level
+const SKIP_EXACT = new Set([
+  // JS / Node
+  'node_modules', '.npm', '.yarn', '.pnp',
+  // Python
+  '__pycache__', '.venv', 'venv', 'env', 'site-packages', '.tox', '.mypy_cache',
+  // Rust / Cargo
+  'target',
+  // Java / JVM
+  '.gradle', '.mvn', 'build', 'out',
+  // Ruby
+  '.bundle', 'vendor',
+  // Generic tooling / version control
+  '.git', '.svn', '.hg',
+  // IDE / editor state
+  '.idea', '.vscode', '.vs',
+  // OS noise
+  '.Spotlight-V100', '.Trashes', '.fseventsd',
+  // Distribution / cache artefacts
+  'dist', 'coverage', '.cache', '.parcel-cache', '.next', '.nuxt', '.sass-cache', '.webpack', '.eslintcache',
+  // docker, virtualisation
+  'docker', 'vagrant', 'virtualenvs'
+]);
+
+// Marker files/dirs: if a directory contains one of these, skip its subtree.
+// Lets us catch projects named anything (e.g. "awesome-media-server") that
+// happen to have a package.json / Cargo.toml / requirements.txt inside.
+// NOTE: .git is intentionally NOT here — a repo root may contain media files
+// at its top level.  Only the .git *subdirectory itself* is blocked via SKIP_EXACT.
+const SKIP_MARKERS = [
+  'package.json',    // Node / JS project root
+  'Cargo.toml',      // Rust project root
+  'go.mod',          // Go module root
+  'requirements.txt',// Python project
+  'setup.py',        // Python package
+  'pyproject.toml',  // Modern Python project
+  'Gemfile',         // Ruby project root
+  'pom.xml',         // Maven (Java)
+  'build.gradle',    // Gradle (Java/Kotlin)
+];
+
+/**
+ * Decide whether to skip an entire directory subtree during scanning.
+ *
+ * Returns { skip: true, reason } when the directory should be pruned, or
+ * { skip: false } when it is safe to descend.
+ *
+ * @param {string}   dirPath  — absolute path of the directory to test
+ * @param {string}   dirName  — basename of the directory (for exact-name check)
+ * @param {string[]} children — names of immediate children (for marker check)
+ */
+function shouldSkipDir(dirPath, dirName, children) {
+  // Tier 1: exact name match (fast O(1) Set lookup)
+  if (SKIP_EXACT.has(dirName.toLowerCase())) {
+    return { skip: true, reason: `"${dirName}" is a known non-media directory` };
+  }
+
+  // Tier 2: marker file present — this directory is a project/repo root
+  for (const marker of SKIP_MARKERS) {
+    if (children.includes(marker)) {
+      return { skip: true, reason: `contains ${marker} (project/repo root)` };
+    }
+  }
+
+  return { skip: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  SCANNER
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -930,6 +1026,7 @@ function progressBar(done, total, label = '', color = 'cyan') {
  *   subtitleFiles — all subtitle file paths
  *   dirs          — all directory paths, sorted deepest-first
  *   videoDirs     — Set of dirs containing ≥1 video (direct or nested)
+ *   skippedDirs   — array of { path, reason } for pruned subtrees
  *
  * Displays a live spinner + running count while scanning because the total
  * is unknown until the full tree has been traversed.
@@ -938,6 +1035,7 @@ async function scanTree(rootDir) {
   const videoFiles = [];
   const subtitleFiles = [];
   const dirs = [];
+  const skippedDirs = []; // { path, reason } — reported after scan
   const directVideoMap = new Map(); // dir → video files directly inside it
 
   let dirsScanned = 0;
@@ -959,11 +1057,28 @@ async function scanTree(rootDir) {
       entries = await fsp.readdir(current, { withFileTypes: true });
       dirsScanned++;
     } catch (err) {
-      // Unreadable directory — warn and skip its subtree
+      // Permission error or disappeared mid-scan — warn and skip subtree
       console.warn(`\n  ${c.yellow('⚠')}  Cannot read: ${current} — ${err.message}`);
       return;
     } finally {
       sem.release();
+    }
+
+    // Build a cheap child-name list for the marker check (no stat calls)
+    const childNames = entries.map(e => e.name);
+
+    // ── Skip-directory check ────────────────────────────────────────────────
+    // Run on every directory we descend into (not just top-level) so that
+    // node_modules nested inside a project, or a git repo anywhere in the
+    // tree, are all pruned without touching their contents.
+    const dirName = path.basename(current);
+    // Don't prune the rootDir itself — the user explicitly pointed at it
+    if (current !== rootDir) {
+      const { skip, reason } = shouldSkipDir(current, dirName, childNames);
+      if (skip) {
+        skippedDirs.push({ path: current, reason });
+        return; // prune entire subtree
+      }
     }
 
     const subTasks = [];
@@ -1002,7 +1117,7 @@ async function scanTree(rootDir) {
     if (videoDirs.has(dir)) videoDirs.add(path.dirname(dir)); // propagate upward
   }
 
-  return { videoFiles, subtitleFiles, dirs, videoDirs };
+  return { videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1158,10 +1273,10 @@ async function main() {
 
   // ── PHASE 1: Scan ─────────────────────────────────────────────────────────
   const t0 = performance.now();
-  let videoFiles, subtitleFiles, dirs, videoDirs;
+  let videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs;
 
   try {
-    ({ videoFiles, subtitleFiles, dirs, videoDirs } = await scanTree(targetPath));
+    ({ videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs } = await scanTree(targetPath));
   } catch (err) {
     console.error(c.red(`\n✖  Fatal scan error: ${err.message}`));
     console.error(c.gray('   No changes have been made.'));
@@ -1173,8 +1288,28 @@ async function main() {
     `  Found ${c.bold(c.cyan(videoFiles.length))} video(s), ` +
     `${c.bold(c.cyan(subtitleFiles.length))} subtitle(s), ` +
     `${c.bold(c.cyan(videoDirs.size))} media folder(s) ` +
-    `${c.gray(`in ${scanMs}ms`)}\n`
+    `${c.gray(`in ${scanMs}ms`)}`
   );
+
+  // Report skipped subtrees so the user knows they were intentionally pruned
+  if (skippedDirs.length > 0) {
+    console.log(
+      `  ${c.yellow('⚠')}  Skipped ${c.bold(c.yellow(skippedDirs.length))} ` +
+      `non-media director${skippedDirs.length === 1 ? 'y' : 'ies'} ` +
+      c.gray('(project/repo roots, dependency trees)')
+    );
+    // Show individual paths only at a reasonable count — beyond that just summarise
+    const SHOW_LIMIT = 5;
+    const toShow = skippedDirs.slice(0, SHOW_LIMIT);
+    for (const s of toShow) {
+      const rel = s.path.replace(targetPath, '').replace(/^[/\\]/, '') || path.basename(s.path);
+      console.log(`     ${c.gray('↳')} ${c.gray(rel)}  ${c.gray('(' + s.reason + ')')}`);
+    }
+    if (skippedDirs.length > SHOW_LIMIT) {
+      console.log(`     ${c.gray(`… and ${skippedDirs.length - SHOW_LIMIT} more`)}`);
+    }
+  }
+  console.log();
 
   // ── PHASE 2: Plan all renames ─────────────────────────────────────────────
   // Nothing is touched on disk in this phase.
