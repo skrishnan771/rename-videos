@@ -268,6 +268,9 @@ const SIZE_TAG_RE = /\b\d+\.?\d*\s*(?:Kbps|Mbps|GB|MB|TB)\b/gi;
 // Extracts: 2160p → "2160p", 1080p → "1080p", 720p → "720p", 4K/UHD → "4K"
 const RESOLUTION_RE = /\b(2160[pi]|1080[pi]|720[pi]|576[pi]|480[pi]|4K|UHD)\b/i;
 
+// Detect case-insensitive filesystem (Windows, macOS) vs case-sensitive (Linux)
+const isCaseInsensitiveFS = process.platform === 'win32' || process.platform === 'darwin';
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  TEXT HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -675,7 +678,7 @@ function buildSubtitleRenames(videoRename, subtitleFiles, reservedPaths) {
 
     if (newSubName === subFilename) continue; // already clean
 
-    const finalName = resolveConflict(subDir, newSubName, false, reservedPaths);
+    const finalName = resolveConflict(subDir, newSubName, false, reservedPaths, '', subPath);
     reservedPaths.add(path.join(subDir, finalName));
 
     results.push({ filePath: subPath, original: subFilename, newName: finalName, parent: subDir });
@@ -737,10 +740,14 @@ function detectDuplicates(allRenames) {
  * @param {Set<string>} reservedPaths  — paths already claimed by this plan
  * @param {string}      [originalName] — original filename (used for resolution extraction)
  */
-function resolveConflict(parentDir, newName, isFolder, reservedPaths, originalName = '') {
+
+function resolveConflict(parentDir, newName, isFolder, reservedPaths, originalName = '', sourcePath = '') {
   // Helper: does this candidate path collide with disk or the current plan?
+  // On case-insensitive file systems (Windows/macOS), fs.existsSync may match
+  // the source file itself when only casing changes — exclude it explicitly.
   const taken = (name) => {
     const p = path.join(parentDir, name);
+    if (sourcePath && isCaseInsensitiveFS && p.toLowerCase() === sourcePath.toLowerCase()) return false;
     return fs.existsSync(p) || reservedPaths.has(p);
   };
 
@@ -844,7 +851,10 @@ function runUndo(targetPath) {
       skipped++; continue;
     }
 
-    if (fs.existsSync(entry.to) && entry.to !== entry.from) {
+    const isSamePath = isCaseInsensitiveFS
+      ? entry.to.toLowerCase() === entry.from.toLowerCase()
+      : entry.to === entry.from;
+    if (fs.existsSync(entry.to) && !isSamePath) {
       console.log(`  ${c.yellow('⚠')}  ${c.yellow('Skipped')} (target already exists): ${c.gray(entry.to)}`);
       skipped++; continue;
     }
@@ -1157,7 +1167,10 @@ function executeRenames(renames, expectDir, completedLog, doneOffset, grandTotal
 
     // Stale-state guard: re-verify destination hasn't appeared since planning
     const dest = path.join(r.parent, r.newName);
-    if (fs.existsSync(dest) && dest !== r.filePath) {
+    const isSamePath = isCaseInsensitiveFS
+      ? dest.toLowerCase() === r.filePath.toLowerCase()
+      : dest === r.filePath;
+    if (fs.existsSync(dest) && !isSamePath) {
       clearStatus();
       console.log(`  ${c.yellow('⚠')}  ${c.yellow('Skipped')} (destination exists): ${r.original} → ${r.newName}`);
       skipped++; continue;
@@ -1343,7 +1356,7 @@ async function main() {
       const parent = path.dirname(file);
       // Pass original name to resolver so it can extract the resolution tag
       // when a naming conflict occurs (produces "[1080p]" instead of "(2)")
-      const finalName = resolveConflict(parent, newName, false, reservedPaths, name);
+      const finalName = resolveConflict(parent, newName, false, reservedPaths, name, file);
       reservedPaths.add(path.join(parent, finalName));
 
       const record = { filePath: file, original: name, newName: finalName, parent };
@@ -1372,7 +1385,7 @@ async function main() {
       if (newName === name || newName.length === 0) continue; // already clean
 
       const parent = path.dirname(dir);
-      const finalName = resolveConflict(parent, newName, true, reservedPaths);
+      const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir);
       reservedPaths.add(path.join(parent, finalName));
 
       dirRenames.push({ filePath: dir, original: name, newName: finalName, parent });
