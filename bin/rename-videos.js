@@ -145,6 +145,7 @@ ${B('NAME CLEANING')}
   Anime specials:    Attack.on.Titan.SP02.1080p.mkv       → Attack on Titan SP02.mkv
                      Fullmetal.Alchemist.OVA.1080p.mkv    → Fullmetal Alchemist OVA.mkv
                      Sword.Art.Online.Special.1080p.mkv   → Sword Art Online Special.mkv
+                     My.Anime.ONA.1080p.mkv               → My Anime ONA.mkv
 
   Season packs:      Chernobyl Season 1 Complete 720p WEB-DL x264 [i_c]
                   →  Chernobyl S01
@@ -219,6 +220,7 @@ const STOP_WORDS = [
   'AAC', 'DD5', 'DD2', 'EAC3', 'DTS', 'TRUEHD', 'ATMOS', 'AC3', 'FLAC', 'MP3', 'OPUS',
   // Language / subtitle flags
   'DUAL', 'MULTI', 'DUBBED', 'SUBBED', 'ESUB', 'ENGSUB', 'TRUE',
+  'HC', 'HARDSUB', 'SOFTSUB', 'FORCED',
   // Streaming service tags
   'CR', 'NF', 'AMZN', 'DSNP', 'HMAX', 'ATVP', 'PCOK', 'PMTP',
   // Folder-specific junk
@@ -232,6 +234,8 @@ const LANG_WORDS = [
   'JAPANESE', 'KOREAN', 'CHINESE', 'FRENCH', 'GERMAN',
   'SPANISH', 'ITALIAN', 'PORTUGUESE', 'RUSSIAN', 'ARABIC',
   'ENG', 'HIN', 'TAM', 'TEL', 'MAL', 'KAN', 'JPN', 'KOR',
+  'SWESUB', 'ENGSUB',
+  'PT', 'BR', 'ZH', 'CN', 'ES', 'FR', 'DE', 'IT', 'RU', 'AR',
 ];
 
 // Articles / prepositions that stay lowercase mid-title
@@ -414,12 +418,13 @@ function parseFilename(raw) {
   if (yearMatch) year = yearMatch[1];
 
   // ── Step 8: Detect anime specials BEFORE episode matching ─────────────────
-  // Patterns: SP01 | OVA | Special (must appear before SxxExx so they aren't
+  // Patterns: SP01 | OVA | Special | ONA (must appear before SxxExx so they aren't
   // swallowed by the episode regex in priority-1 below)
   //
   //   Attack.on.Titan.SP02.1080p.mkv   → specialType="SP", specialNum=2
   //   Fullmetal.Alchemist.OVA.1080p     → specialType="OVA", specialNum=null
   //   Sword.Art.Online.Special.1080p    → specialType="Special", specialNum=null
+  //   My.Anime.ONA.1080p                 → specialType="ONA", specialNum=null
   let specialType = null;
   let specialNum = null;
   let specialMatch = null;
@@ -441,8 +446,13 @@ function parseFilename(raw) {
     if (spcMatch) { specialType = 'Special'; specialMatch = spcMatch; }
   }
 
+  if (!specialMatch) {
+    const onaMatch = base.match(/\bONA\b/i);
+    if (onaMatch) { specialType = 'ONA'; specialMatch = onaMatch; }
+  }
+
   // ── Step 9: Extract season / episode — five patterns in priority order ────
-  const SE_RE = /\bS(\d{1,2})[ ._]?E(\d{1,3})(?:[ ._-]?E(\d{1,3}))?\b/i;
+  const SE_RE = /\bS(\d{1,2})[ ._]*(?:E|EP)(\d{1,3})(?:[ ._-]?(?:E|EP)(\d{1,3}))?\b/i;
   let season = null, episode = null, episodeEnd = null, seMatch = null;
 
   // Priority 1 — Standard "S02E05" or "S02E01-E04" (most common)
@@ -557,6 +567,7 @@ function parseFilename(raw) {
  *   "Attack on Titan SP02.mkv"                 ← anime special
  *   "Fullmetal Alchemist OVA.mkv"              ← OVA
  *   "Sword Art Online Special.mkv"             ← Special
+ *   "My Anime ONA.mkv"                         ← ONA
  *   "Kuttram Purindhavan (2025) S01 EP01-07"   ← useSEPStyle folder
  *   "Chernobyl S01"                            ← season-only folder
  *   "Demon Slayer E26.mkv"                     ← standalone episode
