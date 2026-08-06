@@ -7,6 +7,12 @@
     "rename-videos": "./bin/rename-videos.js"
   },
   "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "keywords": [
     "video",
     "renamer",
