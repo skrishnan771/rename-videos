@@ -151,10 +151,10 @@ async function main() {
       // Camera / timestamp files are never renamed
       if (isCameraFile(name)) continue;
 
-      const newName = cleanName(name);
+      const parent = path.dirname(file);
+      const newName = cleanName(name, false, path.basename(parent));
       if (newName === name) continue; // already clean, no action needed
 
-      const parent = path.dirname(file);
       // Pass original name to resolver so it can extract the resolution tag
       // when a naming conflict occurs (produces "[1080p]" instead of "(2)")
       const finalName = resolveConflict(parent, newName, false, reservedPaths, name, file);

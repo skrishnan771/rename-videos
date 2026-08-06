@@ -127,6 +127,93 @@ test('folder names round-trip through cleanName without an extension', () => {
   assert.equal(cleanName('Silicon Valley (2014)', true), 'Silicon Valley (2014)');
 });
 
+// ── Regression: bare "(N)" episodes inside per-season folders must not ──────
+// collapse to the same filename across every season.
+// Bug: "Silicon Valley (2014)\Season 2\Silicon Valley (2014) (1).mkv" and the
+// identically-numbered episode 1 in Season 1/3/4/5/6 all produced the same
+// season-less "Silicon Valley (2014) E01.mkv", destroying the season info.
+test('bug regression: a "Season N" parent folder is adopted as the season for a bare "(N)" episode', () => {
+  assert.equal(
+    cleanName('Silicon Valley (2014) (1).mkv', false, 'Season 2'),
+    'Silicon Valley (2014) S02 E01.mkv'
+  );
+});
+
+test('different season folders no longer collide on the same episode-1 filename', () => {
+  const season1 = cleanName('Silicon Valley (2014) (1).mkv', false, 'Season 1');
+  const season2 = cleanName('Silicon Valley (2014) (1).mkv', false, 'Season 2');
+  assert.equal(season1, 'Silicon Valley (2014) S01 E01.mkv');
+  assert.equal(season2, 'Silicon Valley (2014) S02 E01.mkv');
+  assert.notEqual(season1, season2);
+});
+
+test('a season folder with trailing junk still yields the right season number', () => {
+  assert.equal(
+    cleanName('Silicon Valley (2014) (5).mkv', false, 'Season 5 (AMZN )'),
+    'Silicon Valley (2014) S05 E05.mkv'
+  );
+});
+
+test('with no folder hint, the bare "(N)" episode still falls back to season-less "E0N"', () => {
+  assert.equal(cleanName('Silicon Valley (2014) (1).mkv'), 'Silicon Valley (2014) E01.mkv');
+});
+
+test('a folder-derived season uses the clean "S02 E01" style, not the folder-range "S02 EP01" style', () => {
+  const parsed = parseFilename('Silicon Valley (2014) (1).mkv', 'Season 2');
+  assert.equal(parsed.useSEPStyle, false);
+});
+
+test('an explicit SxxExx in the filename is not overridden by a season folder hint', () => {
+  assert.equal(
+    cleanName('Silicon Valley S03E05.mkv', false, 'Season 2'),
+    'Silicon Valley S03 E05.mkv'
+  );
+});
+
+// ── Regression: STOP_WORDS/LANG_WORDS colliding with ordinary English words ─
+// used inside real episode titles. Both cases below are real filenames from
+// a user's library, not hypothetical: "REAL" and "IT" (case-insensitive stop
+// words) matched normal-case words in the title and silently truncated it.
+test('bug regression: an episode title containing "Real" is not truncated ("The Real Value")', () => {
+  assert.equal(
+    cleanName('The.Mentalist.S01E04.The.Real.Value.mkv'),
+    'The Mentalist S01 E04 - The Real Value.mkv'
+  );
+});
+
+test('bug regression: an episode title containing "It" is not truncated ("Paint It Red")', () => {
+  assert.equal(
+    cleanName('The.Mentalist.S01E13.Paint.It.Red.mkv'),
+    'The Mentalist S01 E13 - Paint It Red.mkv'
+  );
+});
+
+test('a real ALL-CAPS "REAL" scene tag is still stripped as junk', () => {
+  assert.equal(
+    cleanName('Movie.2020.PROPER.REAL.REPACK-GROUP.mkv'),
+    'Movie (2020).mkv'
+  );
+});
+
+test('movie titles that are themselves risky stop words are not blanked out', () => {
+  assert.equal(cleanName('Dual.2022.1080p.BluRay.x264-GROUP.mkv'), 'Dual (2022).mkv');
+  assert.equal(cleanName('Full.Metal.Jacket.1987.1080p.BluRay.x264-GROUP.mkv'), 'Full Metal Jacket (1987).mkv');
+});
+
+test('a movie literally titled "It" is not swallowed by the language-code check', () => {
+  assert.equal(cleanName('It.2017.1080p.BluRay.x264-GROUP.mkv'), 'It (2017).mkv');
+});
+
+test('technical tags that are NOT in the risky list still work case-insensitively (no regression)', () => {
+  // BluRay/WEBRip are legitimately written in mixed case in the wild and must
+  // keep matching regardless of case — only the risky, English-word-like
+  // tokens moved to strict/case-sensitive matching.
+  assert.equal(
+    cleanName('The.Dark.Knight.2008.1080p.bluray.x264-sparks.mkv'),
+    'The Dark Knight (2008).mkv'
+  );
+});
+
 test('cleanName never throws on pathological input', () => {
   assert.doesNotThrow(() => cleanName(''));
   assert.doesNotThrow(() => cleanName('....mkv'));
