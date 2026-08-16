@@ -20,7 +20,7 @@
 //    • Folder guard         (only rename dirs that contain videos)
 //
 //  Usage:
-//    node rename-videos.js [--path="./videos"] [--force] [--undo] [--help]
+//    rename-videos [--path="./videos"] [--force] [--undo] [--help]
 //
 //  This file is the CLI entry point only — it wires stdin/stdout, argv, and
 //  the filesystem together. The actual renaming logic lives in ../lib and is
@@ -34,7 +34,7 @@ const path = require('path');
 const readline = require('readline');
 const { performance } = require('perf_hooks');
 
-const { c } = require('../lib/colors');
+const { c, isTTY } = require('../lib/colors');
 const { LOG_FILENAME } = require('../lib/constants');
 const { printHelp } = require('../lib/help');
 const { parseArgs } = require('../lib/cli-args');
@@ -48,17 +48,27 @@ const { executeRenames } = require('../lib/executor');
 const { saveUndoLog, runUndo } = require('../lib/undo');
 const { clearStatus, progressBar } = require('../lib/progress');
 const { printSummary } = require('../lib/summary');
-const { isTTY } = require('../lib/colors');
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { argPath, force, undo, help } = parseArgs();
+  const { argPath, force, undo, help, unknown } = parseArgs();
 
   // ── Help mode ─────────────────────────────────────────────────────────────
   if (help) { printHelp(); return; }
+
+  // ── Unknown flags ─────────────────────────────────────────────────────────
+  // Refuse to run rather than silently ignoring them: an ignored flag used to
+  // fall through into a full rename of the current working directory, which is
+  // the most destructive possible response to a typo.
+  if (unknown.length > 0) {
+    for (const flag of unknown) console.error(c.red(`✖  Unknown option: ${flag}`));
+    console.error(c.gray('   Valid options: --path  --force  --undo  --help'));
+    console.error(c.gray('   Run with --help for full usage.'));
+    process.exit(1);
+  }
 
   const targetPath = argPath ? path.resolve(argPath) : process.cwd();
 
@@ -87,10 +97,10 @@ async function main() {
 
   // ── PHASE 1: Scan ─────────────────────────────────────────────────────────
   const t0 = performance.now();
-  let videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs;
+  let videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs, entryIndex;
 
   try {
-    ({ videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs } = await scanTree(targetPath));
+    ({ videoFiles, subtitleFiles, dirs, videoDirs, skippedDirs, entryIndex } = await scanTree(targetPath));
   } catch (err) {
     console.error(c.red(`\n✖  Fatal scan error: ${err.message}`));
     console.error(c.gray('   No changes have been made.'));
@@ -137,6 +147,27 @@ async function main() {
   // conflict resolver doesn't double-book names within a single run
   const reservedPaths = new Set();
 
+  // Answer "does this path already exist?" from the scan index instead of a
+  // sync stat per candidate. Directories the scanner never indexed (pruned
+  // subtrees) fall back to the real filesystem so the check is never weaker
+  // than before. The executor re-verifies on disk before every rename.
+  const existsInScan = (p) => {
+    const known = entryIndex.get(path.dirname(p));
+    return known ? known.has(path.basename(p).toLowerCase()) : fs.existsSync(p);
+  };
+
+  // Subtitles bucketed by directory. Pairing previously walked the entire
+  // subtitle list once per video just to discard everything outside the
+  // video's own folder — quadratic, and by far the slowest phase of a run
+  // (5.1s of a 5.6s plan on a 3,600-video library).
+  const subsByDir = new Map();
+  for (const subPath of subtitleFiles) {
+    const dir = path.dirname(subPath);
+    let bucket = subsByDir.get(dir);
+    if (!bucket) subsByDir.set(dir, bucket = []);
+    bucket.push(subPath);
+  }
+
   const planTotal = videoFiles.length + dirs.length;
   let planDone = 0;
 
@@ -157,14 +188,14 @@ async function main() {
 
       // Pass original name to resolver so it can extract the resolution tag
       // when a naming conflict occurs (produces "[1080p]" instead of "(2)")
-      const finalName = resolveConflict(parent, newName, false, reservedPaths, name, file);
+      const finalName = resolveConflict(parent, newName, false, reservedPaths, name, file, existsInScan);
       reservedPaths.add(path.join(parent, finalName));
 
       const record = { filePath: file, original: name, newName: finalName, parent };
       fileRenames.push(record);
 
       // Immediately pair any matching subtitles to follow this video rename
-      const pairedSubs = buildSubtitleRenames(record, subtitleFiles, reservedPaths);
+      const pairedSubs = buildSubtitleRenames(record, subsByDir.get(parent) || [], reservedPaths, existsInScan);
       subRenames.push(...pairedSubs);
 
     } catch (err) {
@@ -186,7 +217,7 @@ async function main() {
       if (newName === name || newName.length === 0) continue; // already clean
 
       const parent = path.dirname(dir);
-      const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir);
+      const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir, existsInScan);
       reservedPaths.add(path.join(parent, finalName));
 
       dirRenames.push({ filePath: dir, original: name, newName: finalName, parent });

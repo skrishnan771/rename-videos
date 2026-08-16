@@ -219,3 +219,46 @@ test('cleanName never throws on pathological input', () => {
   assert.doesNotThrow(() => cleanName('....mkv'));
   assert.doesNotThrow(() => cleanName('(((()))).mkv'));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Title-less season folders
+// ─────────────────────────────────────────────────────────────────────────────
+// Bug: "Season 3 (BluRay)" was left untouched. Step 11 strips the whole string
+// (it *starts* with the season marker) leaving an empty title, formatFilename
+// bailed on !title, and cleanName's fallback returned the name verbatim — so
+// the release tag survived. Even a already-clean "Season 3" took that path.
+
+test('a title-less season folder drops its release tag', () => {
+  assert.equal(cleanName('Season 3 (BluRay)', true), 'Season 3');
+  assert.equal(cleanName('Season 5 (AMZN WEB-DL)', true), 'Season 5');
+  assert.equal(cleanName('Season 1 Complete', true), 'Season 1');
+});
+
+test('a title-less season folder normalises a zero-padded season', () => {
+  assert.equal(cleanName('Season 03 (BluRay)', true), 'Season 3');
+});
+
+test('a multi-season pack folder is never collapsed to its first season', () => {
+  // "Season 1-6" must not become "Season 1" — that would mislabel the whole
+  // collection, and the folder holds every season subfolder beneath it.
+  assert.equal(cleanName('Season 1-6', true), 'Season 1-6');
+  assert.equal(cleanName('Season 1-6 (1080p)', true), 'Season 1-6 (1080p)');
+});
+
+test('a season folder that does carry a show name is unaffected', () => {
+  assert.equal(cleanName('Chernobyl Season 1 (BluRay)', true), 'Chernobyl S01');
+  assert.equal(cleanName('Chernobyl (2019) Season 1 (BluRay)', true), 'Chernobyl (2019) S01');
+});
+
+test('non-season folders still fall back to the original name', () => {
+  assert.equal(cleanName('Specials', true), 'Specials');
+  assert.equal(cleanName('Extras', true), 'Extras');
+});
+
+test('episode files inside a season folder are unaffected by the folder fix', () => {
+  assert.equal(
+    cleanName('Silicon Valley (2014) - S03E01 - Founder Friendly (1080p BluRay x265 Silence).mkv',
+      false, 'Season 3 (BluRay)'),
+    'Silicon Valley (2014) S03 E01 - Founder Friendly.mkv'
+  );
+});
