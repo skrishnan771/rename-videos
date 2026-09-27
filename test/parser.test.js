@@ -242,7 +242,9 @@ test('a multi-season pack folder is never collapsed to its first season', () => 
   // "Season 1-6" must not become "Season 1" — that would mislabel the whole
   // collection, and the folder holds every season subfolder beneath it.
   assert.equal(cleanName('Season 1-6', true), 'Season 1-6');
-  assert.equal(cleanName('Season 1-6 (1080p)', true), 'Season 1-6 (1080p)');
+  assert.equal(cleanName('Season 1-6 (1080p)', true), 'Season 1-6');
+  assert.equal(cleanName('Breaking Bad Season 1-5 Complete 1080p', true), 'Breaking Bad S01-S05');
+  assert.equal(cleanName('Friends.S01-S10.1080p', true), 'Friends S01-S10');
 });
 
 test('a season folder that does carry a show name is unaffected', () => {
@@ -261,4 +263,59 @@ test('episode files inside a season folder are unaffected by the folder fix', ()
       false, 'Season 3 (BluRay)'),
     'Silicon Valley (2014) S03 E01 - Founder Friendly.mkv'
   );
+});
+
+// ── Real-world naming conventions ────────────────────────────────────────────
+
+const REAL_WORLD = [
+  // Titles that contain a year-like number: the LAST year is the release year
+  ['Blade.Runner.2049.2017.1080p.BluRay.x264.mkv', 'Blade Runner 2049 (2017).mkv'],
+  ['1917.2019.1080p.WEB-DL.mkv', '1917 (2019).mkv'],
+  ['2012.2009.720p.mkv', '2012 (2009).mkv'],
+  ['2012.mkv', '2012.mkv'],
+  // Episode numbering variants
+  ['Show.Name.1x05.Episode.Title.HDTV.mkv', 'Show Name S01 E05 - Episode Title.mkv'],
+  ['Show.Name.S01E01-02.720p.mkv', 'Show Name S01 E01-E02.mkv'],
+  ['Some.Show.S01E01E02E03.mkv', 'Some Show S01 E01-E03.mkv'],
+  ['The.Daily.Show.2024.01.15.Guest.Name.720p.WEB.h264.mkv', 'The Daily Show 2024-01-15 - Guest Name.mkv'],
+  ['[SubsPlease] Jujutsu Kaisen - 24 (1080p) [ABCD1234].mkv', 'Jujutsu Kaisen E24.mkv'],
+  ['[HorribleSubs] One Piece - 1071 [720p].mkv', 'One Piece E1071.mkv'],
+  // Multi-disc movies must stay distinct
+  ['Movie.Name.2003.CD1.DVDRip.XviD.avi', 'Movie Name (2003) CD1.avi'],
+  ['Movie.Name.2003.CD2.DVDRip.XviD.avi', 'Movie Name (2003) CD2.avi'],
+  // Casing
+  ['WandaVision.S01E01.1080p.mkv', 'WandaVision S01 E01.mkv'],
+  ['BoJack.Horseman.S01E01.mkv', 'BoJack Horseman S01 E01.mkv'],
+  ['rocky.ii.1979.mkv', 'Rocky II (1979).mkv'],
+  ['Movie Name - the beginning (2019).mkv', 'Movie Name - The Beginning (2019).mkv'],
+  // Release tags that used to leak into episode titles
+  ['Show.S01E01.Episode.Name.DDP5.1.mkv', 'Show S01 E01 - Episode Name.mkv'],
+  ['Show.S01E01.Title.10bit.mkv', 'Show S01 E01 - Title.mkv'],
+  ['Show.S02E03.The.Title.WEB.h264-GRP.mkv', 'Show S02 E03 - The Title.mkv'],
+  ["Charlottes.Web.2006.mkv", 'Charlottes Web (2006).mkv'],
+];
+
+test('real-world naming conventions', () => {
+  for (const [raw, expected] of REAL_WORLD) assert.equal(cleanName(raw), expected, raw);
+});
+
+test('season folders keep their season when a year is present', () => {
+  assert.equal(cleanName('The.Office.US.2005.S03.1080p.BluRay', true), 'The Office US (2005) S03');
+  assert.equal(cleanName('Breaking.Bad.S01.720p.BluRay', true), 'Breaking Bad S01');
+});
+
+test('a " - N" in a movie with a year is not read as an absolute episode', () => {
+  assert.equal(cleanName('Movie - 2 (2019).mkv'), 'Movie - 2 (2019).mkv');
+});
+
+test('cleanName is idempotent: re-running on its own output changes nothing', () => {
+  for (const [raw] of REAL_WORLD) {
+    const once = cleanName(raw);
+    assert.equal(cleanName(once), once, raw);
+  }
+  assert.equal(cleanName('CID (1998) E1500.mkv'), 'CID (1998) E1500.mkv');
+  for (const folder of ['Friends.S01-S10.1080p', 'Season 1-6 (1080p)', 'The.Office.US.2005.S03.1080p']) {
+    const once = cleanName(folder, true);
+    assert.equal(cleanName(once, true), once, folder);
+  }
 });

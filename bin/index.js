@@ -7,8 +7,8 @@
 //    • Smart name cleaning  (scene, streaming, anime, Indian)
 //    • Subtitle pairing     (.srt/.ass/.sub follow their video)
 //    • Anime specials       (SP01, OVA, Special recognised)
-//    • Duplicate detection  (name + file-size based; preserves
-//                            resolution when conflicts occur)
+//    • Conflict handling    (clashing names get a resolution tag,
+//                            e.g. "[720p]", before a numeric suffix)
 //    • Undo                 (--undo reverses last run; log saved
 //                            in the scanned directory)
 //    • Force mode           (--force skips the Y/N prompt)
@@ -41,7 +41,6 @@ const { parseArgs } = require('../lib/cli-args');
 const { isCameraFile } = require('../lib/camera');
 const { cleanName } = require('../lib/parser');
 const { buildSubtitleRenames } = require('../lib/subtitles');
-const { detectDuplicates } = require('../lib/duplicates');
 const { resolveConflict } = require('../lib/conflict-resolver');
 const { scanTree } = require('../lib/scanner');
 const { executeRenames } = require('../lib/executor');
@@ -71,6 +70,7 @@ async function main() {
   }
 
   const targetPath = argPath ? path.resolve(argPath) : process.cwd();
+  const relPath = (p) => path.relative(targetPath, p);
 
   // Validate target directory exists and is a directory
   try {
@@ -126,8 +126,7 @@ async function main() {
     const SHOW_LIMIT = 5;
     const toShow = skippedDirs.slice(0, SHOW_LIMIT);
     for (const s of toShow) {
-      const rel = s.path.replace(targetPath, '').replace(/^[/\\]/, '') || path.basename(s.path);
-      console.log(`     ${c.gray('↳')} ${c.gray(rel)}  ${c.gray('(' + s.reason + ')')}`);
+      console.log(`     ${c.gray('↳')} ${c.gray(relPath(s.path))}  ${c.gray('(' + s.reason + ')')}`);
     }
     if (skippedDirs.length > SHOW_LIMIT) {
       console.log(`     ${c.gray(`… and ${skippedDirs.length - SHOW_LIMIT} more`)}`);
@@ -143,8 +142,8 @@ async function main() {
   const subRenames = []; // subtitle renames (paired to their video)
   const dirRenames = []; // folder renames
 
-  // reservedPaths tracks destinations already claimed by this plan so the
-  // conflict resolver doesn't double-book names within a single run
+  // Destinations already claimed by this plan — resolveConflict reads and
+  // fills it so no two renames in one run can double-book a name
   const reservedPaths = new Set();
 
   // Answer "does this path already exist?" from the scan index instead of a
@@ -189,7 +188,7 @@ async function main() {
       // Pass original name to resolver so it can extract the resolution tag
       // when a naming conflict occurs (produces "[1080p]" instead of "(2)")
       const finalName = resolveConflict(parent, newName, false, reservedPaths, name, file, existsInScan);
-      reservedPaths.add(path.join(parent, finalName));
+      if (finalName === name) continue; // e.g. an earlier run's "[1080p]" name
 
       const record = { filePath: file, original: name, newName: finalName, parent };
       fileRenames.push(record);
@@ -218,7 +217,7 @@ async function main() {
 
       const parent = path.dirname(dir);
       const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir, existsInScan);
-      reservedPaths.add(path.join(parent, finalName));
+      if (finalName === name) continue;
 
       dirRenames.push({ filePath: dir, original: name, newName: finalName, parent });
 
@@ -236,19 +235,7 @@ async function main() {
     process.exit(1);
   }
 
-  // ── Duplicate detection ────────────────────────────────────────────────────
-  // Check for name collisions after resolution-aware conflict resolution.
-  // At this point every rename has a unique finalName, so duplicates here
-  // would indicate an unexpected edge case — surface as a warning, not abort.
-  const allPlanned = [...fileRenames, ...subRenames, ...dirRenames];
-  const dupWarnings = detectDuplicates(allPlanned);
-  if (dupWarnings.length > 0) {
-    console.log(c.yellow(`⚠  Naming conflicts resolved (resolution tags applied where possible):\n`));
-    dupWarnings.forEach(w => console.log(`   ${c.yellow('•')} ${w}`));
-    console.log('');
-  }
-
-  const totalRenames = allPlanned.length;
+  const totalRenames = fileRenames.length + subRenames.length + dirRenames.length;
   if (totalRenames === 0) {
     console.log(c.green('✔  Nothing to rename — all files already clean.'));
     return;
@@ -256,32 +243,28 @@ async function main() {
 
   // ── PHASE 3: Preview ──────────────────────────────────────────────────────
   // Helper to print one rename row consistently
-  const printRenameRow = (r, rootPath) => {
-    const rel = r.parent.replace(rootPath, '').replace(/^[/\\]/, '');
+  const printRenameRow = (r) => {
+    const rel = relPath(r.parent);
     const prefix = rel ? `${c.gray('[' + rel + ']')} ` : '';
     console.log(`  ${prefix}${c.gray(r.original)}\n  ${c.gray('→')} ${c.cyan(r.newName)}\n`);
   };
 
-  if (fileRenames.length > 0) {
-    console.log(c.bold(`FILES (${fileRenames.length}):`));
-    fileRenames.forEach(r => printRenameRow(r, targetPath));
-  }
-  if (subRenames.length > 0) {
-    console.log(c.bold(`SUBTITLES (${subRenames.length}):`));
-    subRenames.forEach(r => printRenameRow(r, targetPath));
-  }
-  if (dirRenames.length > 0) {
-    console.log(c.bold(`FOLDERS (${dirRenames.length}):`));
-    dirRenames.forEach(r => printRenameRow(r, targetPath));
+  for (const [label, list] of [['FILES', fileRenames], ['SUBTITLES', subRenames], ['FOLDERS', dirRenames]]) {
+    if (list.length === 0) continue;
+    console.log(c.bold(`${label} (${list.length}):`));
+    list.forEach(printRenameRow);
   }
 
   // ── PHASE 4: Confirm ──────────────────────────────────────────────────────
   if (!force) {
     const answer = await new Promise(resolve => {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      // stdin at EOF (piped / cron without --force) never answers — treat as "no"
+      // instead of exiting silently mid-prompt
+      rl.on('close', () => resolve(''));
       rl.question(
         `${c.bold(`Rename ${c.cyan(totalRenames)} item(s)?`)} ${c.gray('(Y/N)')} `,
-        a => { rl.close(); resolve(a.trim()); }
+        a => { resolve(a.trim()); rl.close(); }
       );
     });
     if (answer.toLowerCase() !== 'y') {
@@ -291,6 +274,12 @@ async function main() {
   }
 
   // ── PHASE 5: Execute ──────────────────────────────────────────────────────
+  // Renames are synchronous; without a listener Ctrl+C kills the process
+  // mid-batch and the undo log for what already moved is never written.
+  // With one, the signal waits until the batch and the log are done.
+  process.on('SIGINT', () => {});
+
+
   // Videos and subtitles first (before their parent folder paths change),
   // then folders deepest-first (already sorted that way by scanTree).
   const completedLog = [];

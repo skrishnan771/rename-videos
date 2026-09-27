@@ -77,3 +77,20 @@ test('skips a subtitle that is already clean', () => {
 
   assert.equal(result.length, 0);
 });
+
+test('bug regression: pairs a subtitle whose video name ends in a 2-3 letter tag (".DTS")', () => {
+  const parent = path.join('movies');
+  const videoRename = { original: 'Movie.2019.1080p.DTS.mkv', newName: 'Movie (2019).mkv', parent };
+  const result = buildSubtitleRenames(videoRename, [path.join(parent, 'Movie.2019.1080p.DTS.srt')], new Set(), noneExist);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].newName, 'Movie (2019).srt');
+});
+
+test('pairs region-coded, full-name and flag-only language suffixes', () => {
+  const parent = path.join('movies');
+  const videoRename = { original: 'Movie.2019.mkv', newName: 'Movie (2019).mkv', parent };
+  const subs = ['Movie.2019.pt-BR.srt', 'Movie.2019.English.srt', 'Movie.2019.forced.srt', 'Movie.2019.Extended.srt']
+    .map(s => path.join(parent, s));
+  const names = buildSubtitleRenames(videoRename, subs, new Set(), noneExist).map(r => r.newName);
+  assert.deepEqual(names, ['Movie (2019).pt-BR.srt', 'Movie (2019).English.srt', 'Movie (2019).forced.srt']);
+});

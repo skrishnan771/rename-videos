@@ -24,3 +24,8 @@ test('does not skip an ordinary media directory', () => {
   const result = shouldSkipDir('/movies/Inception (2010)', 'Inception (2010)', ['Inception.mkv']);
   assert.equal(result.skip, false);
 });
+
+test('bug regression: mixed-case skip entries match (".Spotlight-V100", "$RECYCLE.BIN")', () => {
+  assert.equal(shouldSkipDir('/Volumes/x/.Spotlight-V100', '.Spotlight-V100', []).skip, true);
+  assert.equal(shouldSkipDir('D:\$RECYCLE.BIN', '$RECYCLE.BIN', []).skip, true);
+});

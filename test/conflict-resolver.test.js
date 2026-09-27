@@ -40,9 +40,27 @@ test('numeric suffix increments past multiple existing collisions', () => {
 });
 
 test('respects paths already reserved by the in-progress plan, not just disk', () => {
-  const reserved = new Set([path.join('/movies', 'Movie (2010).mkv')]);
+  const reserved = new Set();
+  assert.equal(resolveConflict('/movies', 'Movie (2010).mkv', false, reserved, 'Movie.mkv', '', existsFrom([])), 'Movie (2010).mkv');
   const result = resolveConflict('/movies', 'Movie (2010).mkv', false, reserved, 'Movie.mkv', '', existsFrom([]));
   assert.equal(result, 'Movie (2010) (2).mkv');
+});
+
+test('reservations follow filesystem case rules ("KGF" vs "Kgf" clash on Windows/macOS)', () => {
+  const { isCaseInsensitiveFS } = require('../lib/constants');
+  const reserved = new Set();
+  resolveConflict('/movies', 'KGF (2018).mkv', false, reserved, 'KGF.2018.mkv', '', existsFrom([]));
+  const second = resolveConflict('/movies', 'Kgf (2018).mkv', false, reserved, 'kgf.2018.720p.mkv', '', existsFrom([]));
+  assert.equal(second, isCaseInsensitiveFS ? 'Kgf (2018) [720p].mkv' : 'Kgf (2018).mkv');
+});
+
+test('bug regression: a re-run never treats the source file as its own collision', () => {
+  // Linux used to see "Movie (2010) [1080p].mkv" as taken by itself and
+  // rename it to "Movie (2010) (2).mkv", destroying the resolution tag
+  const source = path.join('/movies', 'Movie (2010) [1080p].mkv');
+  const exists = existsFrom([path.join('/movies', 'Movie (2010).mkv'), source]);
+  const result = resolveConflict('/movies', 'Movie (2010).mkv', false, new Set(), 'Movie (2010) [1080p].mkv', source, exists);
+  assert.equal(result, 'Movie (2010) [1080p].mkv');
 });
 
 test('folder conflicts use plain "(N)" suffix with no extension handling', () => {
