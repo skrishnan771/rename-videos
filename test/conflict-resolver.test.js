@@ -71,17 +71,13 @@ test('folder conflicts use plain "(N)" suffix with no extension handling', () =>
 
 test('on a case-insensitive filesystem, the source file itself is excluded from the collision check', () => {
   // Renaming "movie.MKV" -> "Movie.mkv" is a casing-only change. On Windows/macOS
-  // this must never be treated as a collision against itself, even if the
-  // existence check would otherwise report every path as taken.
+  // this must never be treated as a collision against itself.
+  // (Never use an "everything exists" stub here: on Linux the numeric fallback
+  // would loop forever and hang CI.)
   const { isCaseInsensitiveFS } = require('../lib/constants');
   const sourcePath = path.join('/movies', 'movie.MKV');
-  const alwaysExists = () => true;
-  const result = resolveConflict('/movies', 'Movie.mkv', false, new Set(), 'movie.MKV', sourcePath, alwaysExists);
-  if (isCaseInsensitiveFS) {
-    assert.equal(result, 'Movie.mkv');
-  } else {
-    // On case-sensitive filesystems this really is a fresh name, but since
-    // alwaysExists() reports everything as taken, it must fall through to a suffix.
-    assert.notEqual(result, 'Movie.mkv');
-  }
+  const exists = existsFrom([sourcePath, path.join('/movies', 'Movie.mkv')]);
+  const result = resolveConflict('/movies', 'Movie.mkv', false, new Set(), 'movie.MKV', sourcePath, exists);
+  // On case-sensitive filesystems "Movie.mkv" is a different, existing file
+  assert.equal(result, isCaseInsensitiveFS ? 'Movie.mkv' : 'Movie (2).mkv');
 });
