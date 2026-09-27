@@ -203,28 +203,34 @@ async function main() {
   }
 
   // ── Plan: folders ─────────────────────────────────────────────────────────
+  const planDirRename = (dir) => {
+    try {
+      const name = path.basename(dir);
+      const newName = cleanName(name, true);
+      if (newName === name || newName.length === 0) return; // already clean
+
+      const parent = path.dirname(dir);
+      const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir, existsInScan);
+      if (finalName === name) return;
+
+      dirRenames.push({ filePath: dir, original: name, newName: finalName, parent });
+    } catch (err) {
+      planErrors.push(`Folder: ${dir} — ${err.message}`);
+    }
+  };
+
   for (const dir of dirs) {
     planDone++;
     if (isTTY && planTotal > 200) progressBar(planDone, planTotal, 'planning…', 'cyan');
 
-    try {
-      // Only rename folders that contain at least one video file
-      if (!videoDirs.has(dir)) continue;
-
-      const name = path.basename(dir);
-      const newName = cleanName(name, true);
-      if (newName === name || newName.length === 0) continue; // already clean
-
-      const parent = path.dirname(dir);
-      const finalName = resolveConflict(parent, newName, true, reservedPaths, '', dir, existsInScan);
-      if (finalName === name) continue;
-
-      dirRenames.push({ filePath: dir, original: name, newName: finalName, parent });
-
-    } catch (err) {
-      planErrors.push(`Folder: ${dir} — ${err.message}`);
-    }
+    // Only rename folders that contain at least one video file
+    if (videoDirs.has(dir)) planDirRename(dir);
   }
+
+  // The scanner lists only subfolders, so pointing --path straight at a release
+  // folder renamed its episodes but never the folder itself. Planned last so
+  // it runs after everything inside it. A drive root has no parent to rename in.
+  if (videoFiles.length > 0 && path.dirname(targetPath) !== targetPath) planDirRename(targetPath);
 
   clearStatus();
 
@@ -245,7 +251,7 @@ async function main() {
   // Helper to print one rename row consistently
   const printRenameRow = (r) => {
     const rel = relPath(r.parent);
-    const prefix = rel ? `${c.gray('[' + rel + ']')} ` : '';
+    const prefix = rel && !rel.startsWith('..') ? `${c.gray('[' + rel + ']')} ` : '';
     console.log(`  ${prefix}${c.gray(r.original)}\n  ${c.gray('→')} ${c.cyan(r.newName)}\n`);
   };
 
@@ -279,6 +285,8 @@ async function main() {
   // With one, the signal waits until the batch and the log are done.
   process.on('SIGINT', () => {});
 
+  // Windows can't rename a directory that is this process's working directory
+  process.chdir(path.dirname(targetPath));
 
   // Videos and subtitles first (before their parent folder paths change),
   // then folders deepest-first (already sorted that way by scanTree).
@@ -303,9 +311,12 @@ async function main() {
   clearStatus(); // ensure progress bar is fully cleared before summary
 
   // ── PHASE 6: Save undo log ────────────────────────────────────────────────
+  // The log lives inside the scanned folder — which may itself have just moved
   if (completedLog.length > 0) {
-    saveUndoLog(targetPath, completedLog);
-    console.log(`\n  ${c.gray('💾  Undo log saved →')} ${c.cyan(path.join(targetPath, LOG_FILENAME))}`);
+    const rootRename = completedLog.find(r => r.filePath === targetPath);
+    const logDir = rootRename ? path.join(rootRename.parent, rootRename.newName) : targetPath;
+    saveUndoLog(logDir, completedLog);
+    console.log(`\n  ${c.gray('💾  Undo log saved →')} ${c.cyan(path.join(logDir, LOG_FILENAME))}`);
     console.log(`  ${c.gray('Run with --undo to reverse.')}`);
   }
 
